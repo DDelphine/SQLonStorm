@@ -1,0 +1,972 @@
+/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package join;
+
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FSDataInputStream;
+import org.apache.hadoop.fs.FSDataOutputStream;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.IOUtils;
+
+import static org.apache.storm.hbase.common.Utils.toBytes;
+import static org.apache.storm.hbase.common.Utils.toLong;
+
+import java.util.LinkedList;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Map.Entry;
+import java.util.regex.*;
+
+import backtype.storm.Config;
+import backtype.storm.topology.IRichSpout;
+import backtype.storm.LocalCluster;
+import backtype.storm.StormSubmitter;
+import backtype.storm.topology.BasicOutputCollector;  
+import backtype.storm.spout.SpoutOutputCollector;
+import backtype.storm.task.OutputCollector;
+import backtype.storm.task.ShellBolt;
+import backtype.storm.task.TopologyContext;
+import backtype.storm.topology.BasicOutputCollector;
+import backtype.storm.topology.IRichBolt;
+import backtype.storm.topology.OutputFieldsDeclarer;
+import backtype.storm.topology.TopologyBuilder;
+import backtype.storm.topology.base.BaseBasicBolt;
+import backtype.storm.topology.base.BaseRichBolt;
+import backtype.storm.topology.base.BaseRichSpout;
+import backtype.storm.tuple.Fields;
+import backtype.storm.tuple.Tuple;
+import backtype.storm.tuple.Values;
+import backtype.storm.utils.Utils;
+
+import org.apache.storm.hbase.common.ColumnList;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import backtype.storm.topology.OutputFieldsDeclarer;
+import backtype.storm.tuple.Tuple;
+
+import org.apache.hadoop.hbase.client.Durability;
+import org.apache.hadoop.hbase.client.Mutation;
+import org.apache.storm.hbase.bolt.AbstractHBaseBolt;
+import org.apache.storm.hbase.bolt.HBaseBolt;
+import org.apache.storm.hbase.bolt.mapper.HBaseMapper;
+import org.apache.storm.hbase.bolt.mapper.SimpleHBaseMapper;
+import org.apache.storm.hbase.common.ColumnList;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.HBaseConfiguration;
+import org.apache.hadoop.hbase.HColumnDescriptor;
+import org.apache.hadoop.hbase.HTableDescriptor;
+import org.apache.hadoop.hbase.MasterNotRunningException;
+import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.ZooKeeperConnectionException;
+import org.apache.hadoop.hbase.client.HBaseAdmin;
+import org.apache.hadoop.hbase.client.HTable;
+import org.apache.hadoop.hbase.client.Put;
+
+import java.io.*;
+import java.util.*;
+import java.io.*;
+import java.net.URI;
+import java.net.URISyntaxException;
+
+/**
+ * This topology demonstrates Storm's stream groupings and multilang capabilities.
+ */
+public class join {
+	static Map<String, Integer> parmMap = new HashMap<String,Integer>();
+	static String _file1=new String();
+	static String _file2=new String();
+	static int[] joinKey;
+	static int[] tableKey1;
+	static int[] tableKey2;
+	
+	static String[] joinTables = new String[2];
+	static boolean from_flag = false;
+	static boolean select_flag = false;
+	static boolean join_flag = false;
+	static boolean project_flag = false;
+	static boolean groupBy_flag = false;
+	static boolean count_flag = false;
+	
+	static Map<String, String> join_info = new HashMap<String,String>();
+	
+	static Map<String, Integer> from_col_pos = new HashMap<String,Integer>();
+	static Map<String, Integer> join_col_pos = new HashMap<String,Integer>();
+	static Map<String, Integer> pro_col_pos = new HashMap<String,Integer>();
+	
+	LinkedList<String> operator = new LinkedList<String>();
+	
+	
+	////sel
+	static String _sqlin;
+	static int sel_count = 0;
+	/////
+	static String filename1;
+	static String filename2;
+	static String[] tables;
+	
+	////pro
+	static String[] pro_posList;  static String[] pro_Colfieldslist;  static int pro_count=0;
+	///////
+	
+	////group by
+	static String groupkeyname; static int gro_count =0; static int  groupkeyindex;
+	/////
+	
+	//public join(String file,String tablename,String colfarmily,String input){
+	public join(HashMap<String,String> hashmap){
+		if(hashmap.containsKey("from")){
+			from_flag = true;
+			String value = hashmap.get("from");
+			if(value.contains(",")){
+				 tables = value.split(",");
+				filename1 = tables[0];
+				filename2 = tables[1];
+				_file1 = "/hw1/"+tables[0];
+				_file2 = "/hw1/"+tables[1];
+				System.out.println(_file1+"   "+filename1+"      "+_file2+"   "+filename2);
+			}
+			else{
+				tables = new String[1];
+				tables[0]=hashmap.get("from");
+				filename1 = hashmap.get("from");
+				_file1 = "/hw1/"+filename1;
+				System.out.println(_file1);
+			}
+		}
+		if(hashmap.containsKey("select")){
+			select_flag = true;
+			String value = hashmap.get("select");
+			_sqlin = value;
+		}
+		if(hashmap.containsKey("join")){
+			join_flag = true;
+			String[] tables = hashmap.get("join").split("=");
+			join_info.put(tables[0].split("\\.")[0], tables[0].split("\\.")[1]);
+			join_info.put(tables[1].split("\\.")[0], tables[1].split("\\.")[1]);
+			int i =0;
+			for(Map.Entry<String, String> entry : join_info.entrySet()){
+				joinTables[i] = entry.getKey();
+				i = i+1;
+			}
+			
+		}
+		if(hashmap.containsKey("project"))
+		{
+			String[] mysplit;
+			project_flag = true;
+			if(hashmap.get("project").contains(","))
+			{
+				 mysplit=hashmap.get("project").split(","); 
+			}
+			else {mysplit=new String[1]; mysplit[0]=hashmap.get("project");}
+			
+			pro_Colfieldslist = new String [mysplit.length]; 
+			pro_posList = new String [mysplit.length]; 
+			for(int i=0;i<mysplit.length;i++){
+			pro_Colfieldslist[i]=mysplit[i];
+
+			System.out.println(pro_Colfieldslist[i]);
+			}
+			
+		}
+		if(hashmap.containsKey("groupBy"))
+		{
+			 
+			groupBy_flag = true;
+			groupkeyname = hashmap.get("groupBy");
+			
+		}
+	}
+	
+	public void goupbystart()throws Exception{
+	    Config conf = new Config();
+	    TopologyBuilder builder = new TopologyBuilder();
+	    conf.setDebug(false);
+	    Map<String, Object> hbConf = new HashMap<String, Object>();
+	    hbConf.put("hbase.rootdir", "/usr/local/java/hbase-0.98.11-hadoop2");
+	    conf.put("hbase.conf", hbConf);
+	    //create topology
+	    if(from_flag){
+	    	operator.add("from");
+	    	builder.setSpout("from", new mySpout1(), 1);
+	    	System.out.println("successfully set spout");
+	    }
+	    if(select_flag){
+	    	operator.add("select");
+	    	builder.setBolt("select", new select(), 1).shuffleGrouping("from");
+	    	System.out.println("select bolt successfully connect to from");
+	    }
+	    if(join_flag){
+	    	operator.add("join");
+	    	if(select_flag){
+	    		builder.setBolt("join", new jointable(), 1).shuffleGrouping("select");
+	    		System.out.println("join bolt successfully connect to select");
+	    	}
+	    	else
+	    		builder.setBolt("join", new jointable(), 1).shuffleGrouping("from");
+	    	System.out.println("join bolt successfully connect to from");
+	    }
+	    if(project_flag){
+	    	operator.add("project");
+	    	if(join_flag){
+	    		builder.setBolt("project", new project(), 1).shuffleGrouping("join");
+	    	}
+	    	else if(select_flag){
+	    		builder.setBolt("project", new project(), 1).shuffleGrouping("select");
+	    	}
+	    	else{
+	    		builder.setBolt("project", new project(), 1).shuffleGrouping("from");
+	    	}
+	    }
+	    if(groupBy_flag){
+	    	operator.add("groupBy");
+	    	if(project_flag){
+	    		builder.setBolt("groupBy", new groupBy(), 1).shuffleGrouping("project");
+	    	}
+	    	else if(select_flag){
+	    		builder.setBolt("groupBy", new groupBy(), 1).shuffleGrouping("select");
+	    	}
+	    	else if(join_flag){
+	    		builder.setBolt("groupBy", new groupBy(), 1).shuffleGrouping("join");
+	    	}
+	    	else{
+	    		builder.setBolt("groupBy", new groupBy(), 1).shuffleGrouping("from");
+	    	}
+	    }
+	    builder.setBolt("HdfsBolt", new HdfsBolt(), 1).shuffleGrouping(operator.getLast());
+	    
+	    LocalCluster cluster = new LocalCluster();
+	    cluster.submitTopology("word-count", conf, builder.createTopology());
+	    Thread.sleep(10000); 
+	    cluster.shutdown();
+	    System.out.println("over here!");
+	}
+	
+	public static class mySpout1 extends BaseRichSpout {
+		  SpoutOutputCollector _collector;
+		  int stopspout;
+		  BufferedReader in;
+		  BufferedReader in1;
+
+		  @Override
+		  public void open(Map conf, TopologyContext context, SpoutOutputCollector collector) {
+			    _collector = collector;
+			    for(String file : tables){
+				    try{
+				        stopspout=0;
+				        String file1;
+				        file1 = "hdfs://localhost:9000//hw1//"+file;
+				        Configuration con = new Configuration();
+				        FileSystem fs = FileSystem.get(URI.create(file1), con);
+				        Path path = new Path(file1);
+				        FSDataInputStream in_stream = fs.open(path);
+				        in = new BufferedReader(new InputStreamReader(in_stream));
+				        
+				        String temp = in.readLine();
+				        String[] split = temp.split("\\|");
+				        for(int i=0;i<split.length;i++)
+				        {
+				        	from_col_pos.put(file+"@"+split[i], i);
+				        }
+				        
+						 boolean flag=true; 
+			             String tempString = null;
+					     try{
+					        if (flag==true)
+					        {
+						        while (flag&&(tempString = in.readLine()) != null) {
+						        	tempString = file+"$"+tempString;
+						             System.out.println("here :"+tempString);
+				                     _collector.emit(new Values(tempString));
+						        }
+						        _collector.emit(new Values(file+"$Iamdone"));
+					        }
+					     }
+					     catch (IOException e) {
+					           e.printStackTrace();
+					       } 
+						
+				     }
+				     catch (IOException e) {
+				        e.printStackTrace();
+				     }
+			    } 
+			  }
+
+		  @Override
+		  public void nextTuple() {	   
+		  }
+
+		  @Override
+		  public void ack(Object id) {
+		  }
+
+		  @Override
+		  public void fail(Object id) {
+		  }
+		  
+	      @Override  
+	        public void declareOutputFields(OutputFieldsDeclarer declarer){  
+	            // 定义一个字段word  
+	            declarer.declare(new Fields("input1"));  
+	        }  
+	}
+	
+	///////sel
+	 
+	 ////a.解析where条件返回记录是否可满足用的函数组  
+	 
+		//------------- 
+		//analyze START-------------------
+	 
+		public static boolean comp (String in, String[] tab_in)  //comp用于判断 "一个条件(String in)" 是否成立， 成立则return true
+		{
+			//比较表达式语句in，和已拆开的行tab_in(即split后的的记录行)
+			//in的格式例如 R1=A
+			//String[] CmpArr = in.split("\\s+"); //按空白部分进行拆分 //\\s表示   空格,回车,换行等空白符 ,+号表示一个或多个
+			//如 R1 = A 切分后就成为 [R1,=,A]
+			
+		 
+			
+			String[] CmpArr =  new String[3];//  ;
+			if(in.indexOf(">=")> -1)
+			{
+				CmpArr[0] = in.split(">=")[0]; CmpArr[2]= in.split(">=")[1]; CmpArr[1]=">="; 
+				
+			}
+			else if(in.contains("<="))
+			{CmpArr[0] = in.split("<=")[0]; CmpArr[2]= in.split("<=")[1]; CmpArr[1]="<=";}
+		    else if(in.contains("!="))
+			{CmpArr[0] = in.split("!=")[0]; CmpArr[2]= in.split("!=")[1];  CmpArr[1]="!=";}
+		    else if(in.contains(">"))
+			{CmpArr[0] = in.split(">")[0]; CmpArr[2]= in.split(">")[1];  CmpArr[1]=">";}
+			 
+//		    else if(in.indexOf("<")> -1)
+//			{CmpArr[0] = in.split("<")[0]; CmpArr[2]= in.split("<")[1];  CmpArr[1]="<";
+//			System.out.println("case <<<<<<<<<<<<<<");
+//			}
+		    else if(in.contains("<"))
+			{CmpArr[0] = in.split("<")[0]; CmpArr[2]= in.split("<")[1];  CmpArr[1]="<";
+			//System.out.println("case <<<<<<<<<<<<<<");
+			}
+			else if(in.contains("="))
+			{CmpArr[0] = in.split(">=")[0]; CmpArr[2]= in.split(">=")[1];  CmpArr[1]="=";}
+			
+			/////通过hashmap,使用列名"R1" 索引到 R1列值在 记录tab_in的哪一个位置。记录到col变量中。 
+			//由于sel_colname_pos同于上一个结点的colname_pos，所以此处使用sel_colname_pos进行映射则可。
+			String colname = CmpArr[0];
+			colname = colname.replace(".", "@");
+			//System.out.println("col:"+colname);
+			int col = -1;
+			try{
+				col = from_col_pos.get(colname);
+			} catch (NumberFormatException e){
+				e.printStackTrace();
+			}
+			//System.out.println("col:"+col);
+			///////
+			
+			
+			if("=".equals(CmpArr[1])){
+				float value = 0, cmp = 0;	
+		      	  try{
+		      		  value = Float.parseFloat(tab_in[col]);
+		      	  } catch (NumberFormatException e){
+		      		if(tab_in[col].equals(CmpArr[2]))
+						return true;
+					else return false;
+		      	  }
+		      	if(value == cmp) 
+	        		return true;
+	        	 else return false;
+				
+				
+			} 
+			else if ("!=".equals(CmpArr[1])) {
+				float value = 0, cmp = 0;	
+		      	  try{
+		      		  value = Float.parseFloat(tab_in[col]);
+		      	  } catch (NumberFormatException e){
+				if(tab_in[col].equals(CmpArr[2]))
+					return false;
+				else return true;
+		      	}
+			      	if(value != cmp) 
+		        		return true;
+		        	 else return false;
+	        }
+	        else if (">".equals(CmpArr[1])) {
+	      	  float value = 0, cmp = 0;	
+	      	  try{
+	      		  value = Float.parseFloat(tab_in[col]);
+	      	  } catch (NumberFormatException e){
+	      		  e.printStackTrace();
+	      	  }
+	      	 try{
+	     		  cmp = Float.parseFloat(CmpArr[2]);
+	     	  } catch (NumberFormatException e){
+	     		  e.printStackTrace();
+	     	  }
+	      	 if(value > cmp) 
+	      		return true;
+	      	 else return false;
+	        }
+	        else if (">=".equals(CmpArr[1])) {
+	        	float value = 0, cmp = 0;	
+	        	  try{
+	        		  value = Float.parseFloat(tab_in[col]);
+	        	  } catch (NumberFormatException e){
+	        		  e.printStackTrace();
+	        	  }
+	        	 try{
+	       		  cmp = Float.parseFloat(CmpArr[2]);
+	       	  } catch (NumberFormatException e){
+	       		  e.printStackTrace();
+	       	  }
+	        	 if(value >= cmp) 
+	        		return true;
+	        	 else return false;
+	        }
+	        else if ("<".equals(CmpArr[1])) {
+	        	float value = 0, cmp = 0;	
+	        	  try{
+	        		  value = Float.parseFloat(tab_in[col]);
+	        	  } catch (NumberFormatException e){
+	        		  e.printStackTrace();
+	        	  }
+	        	 try{
+	       		  cmp = Float.parseFloat(CmpArr[2]);
+	       	  } catch (NumberFormatException e){
+	       		  e.printStackTrace();
+	       	  }
+	        	 if(value < cmp) 
+	        		return true;
+	        	 else return false;
+	        }
+	        else if ("<=".equals(CmpArr[1])) {
+	        	float value = 0, cmp = 0;	
+	        	  try{
+	        		  value = Float.parseFloat(tab_in[col]);		
+	        	  } catch (NumberFormatException e){
+	        		  e.printStackTrace();
+	        	  }
+	        	 try{
+	       		  cmp = Float.parseFloat(CmpArr[2]);		
+	       	  } catch (NumberFormatException e){
+	       		  e.printStackTrace();
+	       	  }
+	        	 if(value <= cmp) 
+	        		return true;
+	        	 else return false;
+	        }
+	        else System.exit(1);//where format error 
+			return false;
+			
+		}
+		
+		
+		
+		public static boolean anddiv (String in, String[] tab_in){
+			//拆开含有“AND”的表达式并调用comp分别比较
+			//此处in的格式例如：R1=A AND R2=D
+		 
+			String[] AndArr;
+			if(in.indexOf(" and ")> -1)
+			{
+				AndArr = in.split(" and ");
+			}
+			else
+			{
+				AndArr = new String[1];
+				AndArr[0] = in;
+			}
+			boolean flag = true;
+			
+			for(int i = 0;i < AndArr.length;i++)
+			{
+				flag = comp (AndArr[i], tab_in);
+				if (flag == false)
+					return flag;//必须同时满足所有条件，有一个不满足就false
+			}
+			
+			return flag;
+		}
+		
+		public static boolean check_in (String in, String[] tab_in){
+			//按“OR”拆开表达式，拆为含"AND"的语句并调用anddiv
+			//此处in的格式例如：R1=A AND R2=D OR R2=C
+			String[] OrArr;
+			
+			if(in.indexOf(" or ")> -1)
+			{
+				String[] mysplit = in.split(" or ");
+				OrArr = mysplit;
+			}
+			else
+			{
+				OrArr = new String[1];
+				OrArr[0] = in;
+			 
+			}
+			
+			boolean flag = false;
+			for(int i = 0;i < OrArr.length;i++)
+			{
+				flag = anddiv(OrArr[i], tab_in);
+				if (flag == true)
+					return flag;//只需满足一个条件，有一个满足就true
+			}
+			
+			return false;
+		}
+		//analyze end-------------------
+
+	 
+	  
+
+		
+	 ////b. bolt点
+	  
+		  public static class select extends BaseBasicBolt {  
+	    
+	    @Override
+	    public void execute(Tuple tuple, BasicOutputCollector collector) {
+	    	
+	    	//System.out.println("execute successString[] pro_posList;  String[] pro_Colfieldslist;  int pro_count=0;fully");
+	    	
+			/*if( sel_count==0)//控制下述代码仅执行一次,填充sel_colname_pos
+			{
+				Map<String, Integer> temp=null; 
+				sel_count++;
+	        if(tuple.getSourceComponent().equals("from"))//上一个结点是from
+			{temp=from_col_pos;}
+			 
+			//确定输出string格式，列1|列2|.. ,填充hashmap sel_colname_pos
+		 
+			}*/
+	    	//System.out.println(tuple);
+			String inputstring; 
+			String title="";
+			if(tuple.getString(0).contains("$"))
+			{  
+				inputstring = (tuple.getString(0).split("\\$"))[1];
+				title= (tuple.getString(0).split("\\$"))[0];
+				//System.out.println("111111"+inputstring);
+			}
+		    else{
+			 inputstring = tuple.getString(0);
+			 //System.out.println("222222222"+inputstring);
+			}
+			
+			
+			if(inputstring.contains("Iamdone"))
+			{
+				 collector.emit(new Values(title+"$"+"Iamdone"));//向下一个点发出结束符信息?
+				// String tablename = _sqlin.split(regex);
+			//	 System.out.println("select:"+"Iamdone");
+				return;
+				}
+			String[] split=inputstring.split("\\|"); //inputstring为当前记录行的内容
+			boolean flagin = false;//开始判断此行是否符合where要求
+			flagin = check_in(_sqlin, split);            
+			if(flagin == true) //判断符合where要求，就直接将当前记录行原封不动地输出 
+			//所以sel_colname_pos填充用的是"与其上一个结点的colname_pos相同，则可"
+			{
+		 
+			String tempstring = title+"$"+inputstring;
+			collector.emit(new Values(tempstring));
+			
+			if(!tempstring.equals("Iamdone")){
+			     System.out.println("select:"+tempstring);}
+			}
+			 
+		 
+	    }
+
+	    @Override
+	    public void declareOutputFields(OutputFieldsDeclarer declarer) {
+	    	declarer.declare(new Fields("sel"));  
+	    }
+	  }
+	    
+	////////
+	
+	
+  public static class jointable extends BaseBasicBolt {
+    Iterator Mapkeys1;
+    //Iterator Mapkeys2;
+    Entry Mapkey1; 
+    //Entry Mapkey2;
+    Map<String,LinkedList<String>> key_values1 = new HashMap<String,LinkedList<String>>();
+    Map<String,LinkedList<String>> key_values2 = new HashMap<String,LinkedList<String>>();
+    LinkedList<String> valueList = new LinkedList();
+    
+    String tableName;
+    String table;
+    String newTable;
+    
+    int table1_col_len;
+    boolean flag1 = true;
+    boolean flag2 = true;
+    boolean flag3 = true;
+    
+    @Override
+    public void execute(Tuple tuple, BasicOutputCollector collector) {
+    	String input;
+    	if(tuple.getString(0).contains("\\$"))
+    	   input = tuple.getString(0).split("\\$")[1];
+    	else
+    		input = tuple.getString(0);
+      if(input!=null){
+      //System.out.println(input+ "********");// + input.split("$")[0] +"      "+input.split("$")[1] );
+      String[] test = input.split("\\$");
+      /*for(String e : test){
+    	  System.out.println(e);
+      }*/
+      tableName = input.split("\\$")[0];
+      table = input.split("\\$")[1];
+      LinkedList<String> valueList;
+      //judge the precedent of tuple to read the related hashMap
+      join_col_pos = from_col_pos;
+      
+      if(tableName.equals(joinTables[0])){
+    	  //System.out.println("this tuple is from" + tableName+"  "+joinTables[0]);
+	      if (table.equals("Iamdone")&&flag1)
+	      {
+	    	//adjust the position of each column
+	    	  String colName = join_info.get(tableName);
+	    	  int pos = join_col_pos.get(tableName+"@"+colName);
+	    	  for(Map.Entry<String, Integer> entry : join_col_pos.entrySet()){
+	    		  if(entry.getKey().split("@")[0].equals(tableName) && entry.getValue()<pos){
+	    			  join_col_pos.put(entry.getKey(), entry.getValue()+1);
+	    		  }
+	    	  }
+	    	  System.out.println("spout ***table1*** finished emitting");
+	    	  flag1=false;
+	      }
+	      else if(flag1){
+	    	  System.out.println("Get a tuple from  ***table1***");
+	    	  String[] split=table.split("\\|");
+	    	  table1_col_len = split.length;
+	    	  String colName = join_info.get(tableName);
+	    	  int pos1 = from_col_pos.get(tableName+"@"+colName);
+	    	  join_col_pos.put(colName, 0);
+	    	  newTable = "";
+	    	  //reconstruct the table with adjusting column position
+    		  for(int i = 0; i < split.length; i++){
+    			  if( i != pos1){
+    				  newTable = newTable + "|" + split[i];
+    			  }
+    		  }
+    		  System.out.println("new table is " + newTable);
+	    	  if(key_values1.containsKey(split[pos1])){
+	    		  valueList = key_values1.get(split[pos1]);
+	    		  valueList.add(newTable);
+	    		  key_values1.put(split[pos1], valueList);
+	    		  System.out.println(split[pos1] + "------- has coloumn---------- "+ valueList);
+	    	  }
+	    	  else{
+	    		  LinkedList<String> valuelist = new LinkedList();
+	    		  valuelist.add(newTable);
+	    		  System.out.println(split[pos1] + "------- has coloumn---------- ");
+	    		  key_values1.put(split[pos1], valuelist);
+	    	  }
+           }
+      }
+      
+      else if(tableName.equals(joinTables[1])){
+    	  if (table.equals("Iamdone")&&flag2)
+	      {
+	    	//adjust the position of each column
+	    	  String colName = join_info.get(tableName);
+	    	  int pos2 = join_col_pos.get(tableName+"@"+colName);
+	    	  for(Map.Entry<String, Integer> entry : join_col_pos.entrySet()){
+	    		  if(entry.getKey().split("@")[0].equals(tableName) && entry.getValue()<pos2){
+	    			  join_col_pos.put(entry.getKey(), entry.getValue()+table1_col_len);
+	    		  }
+	    		  if(entry.getKey().split("@")[0].equals(tableName) && entry.getValue()>pos2){
+	    			  join_col_pos.put(entry.getKey(), entry.getValue()+table1_col_len-1);
+	    		  }
+	    	  }
+	    	  System.out.println("spout ***table2*** finished emitting");
+	    	  flag2=false;
+	    	  for(Entry<String, Integer> entry2 : join_col_pos.entrySet()){
+	  			System.out.println(tableName + entry2.getKey()+" has coloumn "+ entry2.getValue());
+	  		}
+	      }
+	      else if(flag2){
+	    	  String[] split=table.split("\\|");
+	    	  String colName1 = join_info.get(tableName);
+	    	  for(Entry<String, Integer> entry2 : from_col_pos.entrySet()){
+		  			System.out.println(tableName + entry2.getKey()+" column number is "+ entry2.getValue());
+	    	  }
+	    	  System.out.println(from_col_pos.containsKey(colName1));
+	    	  System.out.println("3333333333333333333"+colName1+from_col_pos.get(colName1));
+	    	  int pos = from_col_pos.get(tableName+"@"+colName1);
+	    	  join_col_pos.put(colName1, 0);
+	    	  newTable = "";
+	    	  //reconstruct the table with adjusting column position
+    		  for(int i = 0; i < split.length; i++){
+    			  if( i != pos){
+    				  newTable = newTable + "|" + split[i];
+    			  }
+    		  }
+    		  System.out.println("new table is " + newTable);
+	    	  if(key_values2.containsKey(split[pos])){
+	    		  valueList = key_values2.get(split[pos]);
+	    		  valueList.add(newTable);
+	    		  key_values2.put(split[pos], valueList);
+	    	  }
+	    	  else{
+	    		  LinkedList<String> valuelist = new LinkedList();
+	    		  valuelist.add(newTable);
+	    		  key_values2.put(split[pos], valuelist);
+	    		  System.out.println(split[pos] + "------- has coloumn---------- ");
+	    	  }
+           }
+        }
+      }
+      else
+    	  System.out.println("tuple is null");
+      if(flag1==false && flag2==false && flag3==true){
+    	  flag3 = false;
+    	  System.out.println("now begain to join two tables");
+    	  String key;
+    	  LinkedList<String> valuelist1;
+    	  LinkedList<String> valuelist2;
+    	  Mapkeys1 = key_values1.entrySet().iterator();
+    	  String emitString = null;
+    	  while(Mapkeys1.hasNext()){
+    		  Mapkey1 = (Entry)Mapkeys1.next();
+    		  key = (String)Mapkey1.getKey();
+    		  if(key_values2.containsKey(key)){
+    			  valuelist1 = (LinkedList<String>)Mapkey1.getValue();
+    			  valuelist2 = (LinkedList<String>)key_values2.get(key);
+    			  for(String e1 : valuelist1){
+    				  for(String e2 : valuelist2){
+    					  emitString = key;
+    					  emitString = emitString +  e1  + e2;
+        				  System.out.println(emitString);
+    					  collector.emit(new Values(emitString));
+    				  }
+    			  }  
+    		  }
+    	  }
+      }
+    }
+
+    @Override
+    public void declareOutputFields(OutputFieldsDeclarer declarer) {
+        declarer.declare(new Fields("String"));  
+    }
+  }
+  
+  public static class project extends BaseBasicBolt {  
+	    
+	    @Override
+	    public void execute(Tuple tuple, BasicOutputCollector collector) {
+			if( pro_count==0)//控制下述代码仅执行一次,填充pro_posList与pro_colname_pos
+			{
+				Map<String, Integer> temp=null; 
+				pro_count++;
+	        if(tuple.getSourceComponent().equals("from"))//上一个结点是from1 
+			{temp=from_col_pos;}
+		    if(tuple.getSourceComponent().equals("select"))//上一个结点是select
+			{temp=from_col_pos;}
+		    if(tuple.getSourceComponent().equals("join"))//上一个结点是join
+			{temp=join_col_pos;}
+			
+			for(int i=0;i<pro_Colfieldslist.length;i++){
+				String colname = pro_Colfieldslist[i];
+				colname = colname.replace(".", "@");
+			pro_posList[i]=""+temp.get(colname);
+			
+					//确定输出string格式，列1|列2|.. ,填充hashmap pro_colname_pos
+			pro_col_pos.put(pro_Colfieldslist[i], i); //列名为pro_Colfieldslist[i]的列值在pos=i处。
+			}
+			 
+			}
+			
+			String inputstring;
+			if(tuple.getString(0).contains("$"))
+			{inputstring = (tuple.getString(0).split("\\$"))[1]; }
+		    else{
+			 inputstring = tuple.getString(0);
+			}
+			 
+			if(inputstring.contains("Iamdone"))
+			{
+				 collector.emit(new Values("Iamdone"));//向下一个点发出结束符信息?
+				return;
+				}
+		 
+			String[] split=inputstring.split("\\|"); //inputstring为当前记录行的内容
+			 			
+			String tempstring=null; 		            
+			//解析每一行文本内容，对每一行记录，按照pro_posList指定取出各列，并【按顺序】组织成为tempstring  emit出去。
+			
+			for(int i=0;i<pro_posList.length;i++)   
+			{        	 
+			int num=Integer.parseInt(pro_posList[i]); //要取用的列的位置
+			String t1=split[num];//取到的列值
+				if(tempstring==null)
+				{tempstring=t1;}
+	            else {tempstring=tempstring+"|"+t1;}		
+								 
+			//此时最后构造出来的tempstring就是如 "取用列1的值|取用列2的值|....
+			//对于一个记录行会构造一个如上字符串
+								
+			}  	
+			 
+		    collector.emit(new Values(tempstring));
+		    System.out.println("project:"+tempstring);
+		 
+	    }
+
+	    @Override
+	    public void declareOutputFields(OutputFieldsDeclarer declarer) {
+	        declarer.declare(new Fields("projection"));  
+	    }
+	  }
+  
+  ////groupby
+  public static class groupBy extends BaseBasicBolt {
+	    Iterator Mapkeys;
+	    Entry Mapkey; 
+	    Map<String,LinkedList<String>> groupMap=new 
+	    	    HashMap<String,LinkedList<String>>(); 
+	    boolean flag=true;
+	    
+	    @Override
+	    public void execute(Tuple tuple, BasicOutputCollector collector) {
+	   
+	    	if( gro_count==0)//控制下述代码仅执行一次,填充pro_posList与pro_colname_pos
+			{
+				Map<String, Integer> temp=null; 
+				gro_count ++;
+	        if(tuple.getSourceComponent().equals("from"))//上一个结点是from1 
+			{temp=from_col_pos;}
+		    if(tuple.getSourceComponent().equals("select"))//上一个结点是select
+			{temp=from_col_pos;}
+		    if(tuple.getSourceComponent().equals("join"))//上一个结点是join
+			{temp=join_col_pos;}
+		    if(tuple.getSourceComponent().equals("project"))//上一个结点是project
+			{temp=pro_col_pos; }
+
+		    System.out.println("groupkeyname:"+groupkeyname);
+		    groupkeyindex=temp.get(groupkeyname);
+			 
+			}
+	    	
+	    	String input = tuple.getString(0); 
+			if(input.contains("$"))
+			{  
+				input = (input.split("\\$"))[1];
+				 }
+		    else{
+		  
+			}
+			
+	    	String[] temp = input.split("\\|");
+	      String inputkey = temp[groupkeyindex];  //groupby key de  zhi
+	      
+	      LinkedList<String> valueList;
+	      if (input.contains("Iamdone")&&flag)
+	      {
+	    	  flag=false;
+	          Mapkeys=groupMap.entrySet().iterator();
+	          String key;
+	          String[] tempstring=new String [temp.length]; 
+	          while(Mapkeys.hasNext()){        	  
+	              Mapkey=(Entry)Mapkeys.next();
+	              key=(String)Mapkey.getKey();
+	              valueList=(LinkedList)Mapkey.getValue();
+	              for (int i=0;i<valueList.size();i++)   
+	              {
+	            	  String out = valueList.get(i);
+	            	   
+	            	  collector.emit(new Values(out));
+	            	  System.out.println("groupby:"+out);
+					  // 输出为 [groupkey,列1,列2,..列i-1,列i+1,列n]
+					  //所以groupby实现实际上就是把groupkey列抽出来放到最前面，并且将记录按照 groupby相同排序在一起的 顺序 输到Hbase表中
+					  //列i为原groupkey位置。
+	              }
+	          }  
+	      }
+	      else if(flag){
+	    	  
+	    	  if(groupMap.containsKey(inputkey))
+	    	  {valueList= groupMap.get(inputkey);valueList.add(input);}
+	    	  else{
+	    		  LinkedList<String> addvalue=new LinkedList<String>();
+	    		  addvalue.add(input); 
+	    	      groupMap.put(inputkey, addvalue);
+	    	  }
+	    	   
+	     
+	       }
+	    }
+
+	    @Override
+	    public void declareOutputFields(OutputFieldsDeclarer declarer) {
+	        declarer.declare(new Fields("group"));  
+	    }
+	  }
+  
+  //////output
+  public static class HdfsBolt extends BaseRichBolt {
+	    FSDataOutputStream out;
+
+	    
+	    @Override
+	    public void prepare(Map conf, TopologyContext context, OutputCollector collector) {
+        try{
+            Configuration conf1 = new Configuration();
+            String hdfsfile= "hdfs://localhost:9000"+"/hw2/test/result";
+            FileSystem fs = FileSystem.get(URI.create(hdfsfile), conf1);
+            Path dstPath = new Path(hdfsfile);
+        	  FileSystem dhfs = dstPath.getFileSystem(conf1) ;
+        	  out =fs.create(dstPath);
+         }catch (IOException e) {
+	        e.printStackTrace();
+	        } 
+	    }
+	    
+	    @Override
+	    public void execute(Tuple tuple) {
+	      String input = tuple.getString(0);
+	      try{
+	           out.write(input.getBytes("UTF-8"));
+	           out.flush();
+	           out.write('\n');
+	           out.flush();
+         }catch (IOException e) {
+	           e.printStackTrace();
+	       } 
+	    }
+
+	    @Override
+	    public void declareOutputFields(OutputFieldsDeclarer declarer) {
+	    }
+	  }
+}
